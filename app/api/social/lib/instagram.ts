@@ -4,9 +4,7 @@ import {
   buildErrorResult,
   decodeHtmlEntities,
   extractMetaTag,
-  extractNamedMetaTag,
   fetchRapidApiJson,
-  fetchText,
   formatNumber,
   getArrayByPath,
   getByPath,
@@ -15,9 +13,16 @@ import {
   getNumber,
   getRapidApiConfig,
   getString,
+  parseCount,
   readCookieHeader,
   sumViews,
 } from "./utils";
+
+const INSTAGRAM_PROFILE_HEADERS: HeadersInit = {
+  ...REQUEST_HEADERS,
+  "user-agent":
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+};
 
 export async function getInstagramData(
   username: string,
@@ -37,57 +42,48 @@ export async function getInstagramData(
     return rapidApiResult;
   }
 
-  const webProfileInfoResult = await tryInstagramWebProfileInfo(username, limit, debug);
-  if (webProfileInfoResult) {
-    webProfileInfoResult.debug = debug;
-    return webProfileInfoResult;
-  }
-
   const profileUrl = `https://www.instagram.com/${username}/`;
 
   try {
-    const html = await fetchText(profileUrl);
-    const profileImageUrl = extractMetaTag(html, "og:image");
-    const accountName = decodeHtmlEntities(
-      extractMetaTag(html, "og:title")?.split(" (@")[0] ?? username,
+    const html = await fetchInstagramHtml(profileUrl);
+    const preloadedHtmlResult = await extractInstagramPreloadedPageData(
+      html,
+      username,
+      limit,
+      debug,
     );
-    const description = decodeHtmlEntities(
-      extractMetaTag(html, "og:description") ??
-        extractNamedMetaTag(html, "description") ??
-        "",
-    );
+    if (preloadedHtmlResult) {
+      preloadedHtmlResult.debug = debug;
+      return preloadedHtmlResult;
+    }
 
-    const followersLabel = description.match(/^([^,]+ Followers)/i)?.[1];
+    const webProfileInfoResult = await tryInstagramWebProfileInfo(username, limit, debug);
+    if (webProfileInfoResult) {
+      webProfileInfoResult.debug = debug;
+      return webProfileInfoResult;
+    }
+
     const userId = html.match(/"id":"(\d+)"/)?.[1];
-    const items = userId ? await tryInstagramFeed(userId, profileUrl, limit) : [];
-    const warnings: string[] = [];
-
-    if (items.length === 0) {
-      warnings.push(
-        "Instagram exposes profile metadata publicly, but recent post view counts are frequently blocked for logged-out requests.",
-      );
-    }
-
-    if (!getRapidApiConfig("instagram")) {
-      warnings.push(
-        "RapidAPI Instagram credentials are not configured in this environment, so richer post data can only come from public web fallbacks.",
-      );
-    }
+    const items = userId ? await tryInstagramFeed(userId, profileUrl, limit, debug) : [];
+    const totalViews = items.length > 0 ? sumViews(items) : null;
 
     return {
       platform: "instagram",
       username,
-      accountName,
-      profileImageUrl: profileImageUrl ?? undefined,
-      totalViews: sumViews(items),
+      accountName:
+        decodeHtmlEntities(extractMetaTag(html, "og:title")?.split(" (@")[0] ?? username),
+      profileImageUrl: extractMetaTag(html, "og:image") ?? undefined,
+      totalViews,
       totalViewsLabel:
-        items.length > 0
-          ? `${formatNumber(sumViews(items))} across fetched posts`
+        totalViews != null
+          ? `${formatNumber(totalViews)} across fetched posts`
           : "Unavailable from public Instagram metadata",
-      followersLabel,
-      source: "Instagram public profile metadata",
-      status: "partial",
-      warnings,
+      followersLabel: buildFollowersLabel(extractInstagramFollowersFromHtml(html)),
+      source: "Instagram public profile page",
+      status: items.length >= Math.min(limit, 5) ? "success" : "partial",
+      warnings: [
+        "Instagram changed its public page shape, so the API is using minimal fallbacks for this request.",
+      ],
       debug,
       items,
     };
@@ -102,6 +98,77 @@ export async function getInstagramData(
       error,
     );
   }
+}
+
+async function extractInstagramPreloadedPageData(
+  html: string,
+  username: string,
+  limit: number,
+  debug: string[],
+): Promise<PlatformResult | null> {
+  const profileData = extractInstagramPreloadedDataScript(html, "xig_user_by_igid_v2", debug);
+  const timelineData = extractInstagramPreloadedDataScript(
+    html,
+    "polaris_timeline_connection",
+    debug,
+  );
+
+  const user =
+    getByPath(profileData, "xig_user_by_igid_v2") ??
+    getByPath(timelineData, "xig_user_by_igid_v2");
+
+  if (!user || typeof user !== "object") {
+    debug.push("debug: Instagram preloaded HTML had no usable user object");
+    return null;
+  }
+
+  const followersCount =
+    getFirstNumber(user, ["follower_count", "followers_count"]) ??
+    extractInstagramFollowersFromHtml(html);
+  const rawItems = extractInstagramRapidApiItems(timelineData ?? profileData, limit);
+
+  if (rawItems.length === 0) {
+    debug.push("debug: Instagram preloaded HTML had no timeline items");
+    return null;
+  }
+
+  const { items: enrichedItems, usedLikeFallback } = await enrichInstagramItems(rawItems, debug);
+  const hasViewMetrics = enrichedItems.some(
+    (item) => item.contentType === "video" && item.views != null,
+  );
+  const shouldUseFollowersProxy = usedLikeFallback || !hasViewMetrics;
+
+  debug.push(`debug: Instagram preloaded HTML yielded ${enrichedItems.length} item(s)`);
+
+  return {
+    platform: "instagram",
+    username: getFirstString(user, ["username"]) ?? username,
+    accountName:
+      getFirstString(user, ["full_name", "username"]) ??
+      decodeHtmlEntities(extractMetaTag(html, "og:title")?.split(" (@")[0] ?? username),
+    profileImageUrl:
+      getFirstString(user, ["profile_pic_url_hd", "profile_pic_url"]) ??
+      extractMetaTag(html, "og:image") ??
+      undefined,
+    totalViews: shouldUseFollowersProxy ? followersCount ?? null : sumViews(enrichedItems),
+    totalViewsLabel:
+      shouldUseFollowersProxy
+        ? followersCount != null
+          ? `${formatNumber(followersCount)} followers used as a public proxy`
+          : "Unavailable from public Instagram data"
+        : `${formatNumber(sumViews(enrichedItems))} across fetched posts`,
+    followersLabel: buildFollowersLabel(followersCount),
+    source: "Instagram preloaded mobile profile HTML",
+    status: enrichedItems.length >= Math.min(limit, 5) ? "success" : "partial",
+    warnings:
+      shouldUseFollowersProxy
+        ? [
+            "Instagram hides most public view counts for logged-out requests, so followers are used as the profile-level proxy and post metrics fall back to public like counts where needed.",
+          ]
+        : [],
+    debug,
+    items: enrichedItems,
+  };
 }
 
 async function tryInstagramFeed(
@@ -123,7 +190,12 @@ async function tryInstagramFeed(
         ...REQUEST_HEADERS,
         accept: "*/*",
         referer,
-        ...(cookieHeader ? { cookie: cookieHeader, "x-csrftoken": extractCookieValue(cookieHeader, "csrftoken") ?? "" } : {}),
+        ...(cookieHeader
+          ? {
+              cookie: cookieHeader,
+              "x-csrftoken": extractCookieValue(cookieHeader, "csrftoken") ?? "",
+            }
+          : {}),
         "x-ig-app-id": "936619743392459",
         "x-asbd-id": "129477",
         "x-requested-with": "XMLHttpRequest",
@@ -223,7 +295,6 @@ async function tryInstagramRapidApi(
       "user.edge_followed_by.count",
       "data.user.follower_count",
       "data.user.followers_count",
-      "data.user.follower_count",
       "user.follower_count",
       "user.followers_count",
       "data.follower_count",
@@ -243,8 +314,7 @@ async function tryInstagramRapidApi(
         items.length > 0
           ? `${formatNumber(sumViews(items))} across fetched posts`
           : "Unavailable from RapidAPI response",
-      followersLabel:
-        followersCount != null ? `${formatNumber(followersCount)} followers` : undefined,
+      followersLabel: buildFollowersLabel(followersCount),
       source: `RapidAPI (${config.host})`,
       status: items.length > 0 ? "success" : "partial",
       warnings:
@@ -284,7 +354,12 @@ async function tryInstagramWebProfileInfo(
           accept: "*/*",
           referer: profileUrl,
           origin: "https://www.instagram.com",
-          ...(cookieHeader ? { cookie: cookieHeader, "x-csrftoken": extractCookieValue(cookieHeader, "csrftoken") ?? "" } : {}),
+          ...(cookieHeader
+            ? {
+                cookie: cookieHeader,
+                "x-csrftoken": extractCookieValue(cookieHeader, "csrftoken") ?? "",
+              }
+            : {}),
           "x-asbd-id": "129477",
           "x-ig-app-id": "936619743392459",
           "x-requested-with": "XMLHttpRequest",
@@ -320,8 +395,7 @@ async function tryInstagramWebProfileInfo(
     return {
       platform: "instagram",
       username,
-      accountName:
-        getFirstString(user, ["full_name", "username"]) ?? username,
+      accountName: getFirstString(user, ["full_name", "username"]) ?? username,
       profileImageUrl:
         getFirstString(user, ["profile_pic_url_hd", "profile_pic_url"]) ?? undefined,
       totalViews: items.length > 0 ? sumViews(items) : null,
@@ -329,8 +403,7 @@ async function tryInstagramWebProfileInfo(
         items.length > 0
           ? `${formatNumber(sumViews(items))} across fetched posts`
           : "Unavailable from Instagram web profile info",
-      followersLabel:
-        followersCount != null ? `${formatNumber(followersCount)} followers` : undefined,
+      followersLabel: buildFollowersLabel(followersCount),
       source: "Instagram web profile info endpoint",
       status: items.length > 0 ? "success" : "partial",
       warnings:
@@ -350,12 +423,14 @@ async function tryInstagramWebProfileInfo(
 
 function extractInstagramRapidApiItems(data: unknown, limit: number): DashboardItem[] {
   const postArrays = [
+    getArrayByPath(data, "xig_user_by_igid_v2.polaris_timeline_connection.edges"),
     getArrayByPath(data, "data.items"),
     getArrayByPath(data, "data.data.items"),
     getArrayByPath(data, "items"),
+    getArrayByPath(data, "data.xdt_api__v1__feed__user_timeline_graphql_connection.edges"),
+    getArrayByPath(data, "xdt_api__v1__feed__user_timeline_graphql_connection.edges"),
     getArrayByPath(data, "data.user.edge_owner_to_timeline_media.edges"),
     getArrayByPath(data, "graphql.user.edge_owner_to_timeline_media.edges"),
-    getArrayByPath(data, "data.user.edge_owner_to_timeline_media.edges"),
     getArrayByPath(data, "user.edge_owner_to_timeline_media.edges"),
     getArrayByPath(data, "data.user.edge_felix_video_timeline.edges"),
     getArrayByPath(data, "user.edge_felix_video_timeline.edges"),
@@ -368,15 +443,19 @@ function extractInstagramRapidApiItems(data: unknown, limit: number): DashboardI
   return rawItems
     .map((rawItem, index) => {
       const item = getByPath(rawItem, "node") ?? rawItem;
-      const viewCount = getFirstNumber(item, [
+      const metricCount = getFirstNumber(item, [
         "video_view_count",
         "play_count",
         "view_count",
+        "like_count",
+        "edge_liked_by.count",
+        "edge_media_preview_like.count",
         "media_preview_like_count",
       ]);
-      const shortcodeSource = getFirstString(item, ["shortcode", "code"]);
-      const mediaId = getFirstString(item, ["id", "pk"]) ?? `instagram-${index}`;
-      const shortcode = shortcodeSource ?? mediaId;
+      const mediaId = getFirstString(item, ["pk", "id"]) ?? `instagram-${index}`;
+      const shortcode =
+        getFirstString(item, ["shortcode", "code"]) ??
+        (/^\d+$/.test(mediaId) ? instagramMediaIdToShortcode(mediaId) : mediaId);
       const isReel =
         getByPath(item, "media_type") === 2 ||
         getByPath(item, "product_type") === "clips";
@@ -399,13 +478,179 @@ function extractInstagramRapidApiItems(data: unknown, limit: number): DashboardI
             "thumbnail_url",
             "image_versions2.candidates.0.url",
             "display_resources.0.src",
+            "display_uri",
           ]) ?? undefined,
-        views: viewCount,
-        viewsLabel: viewCount != null ? formatNumber(viewCount) : "Unavailable",
+        contentType: isReel ? "video" : undefined,
+        views: metricCount,
+        viewsLabel: metricCount != null ? formatNumber(metricCount) : "Unavailable",
         publishedLabel: undefined,
       } satisfies DashboardItem;
     })
     .filter((item) => Boolean(item.url));
+}
+
+async function enrichInstagramItems(items: DashboardItem[], debug: string[]) {
+  const enrichedItems = await Promise.all(
+    items.map(async (item) => {
+      const metric = await extractInstagramMetricFromPostPage(item.url, debug);
+      if (!metric) {
+        return { item, usedLikeFallback: false };
+      }
+
+      return {
+        item: {
+          ...item,
+          views: metric.count,
+          viewsLabel: formatNumber(metric.count),
+          contentType: metric.type === "views" ? "video" : item.contentType,
+        } satisfies DashboardItem,
+        usedLikeFallback: metric.type === "likes",
+      };
+    }),
+  );
+
+  return {
+    items: enrichedItems.map((entry) => entry.item),
+    usedLikeFallback: enrichedItems.some((entry) => entry.usedLikeFallback),
+  };
+}
+
+async function extractInstagramMetricFromPostPage(url: string, debug: string[]) {
+  try {
+    const html = await fetchInstagramHtml(url);
+    const description = decodeHtmlEntities(extractMetaTag(html, "og:description") ?? "");
+    const metricMatch = description.match(/^([^,]+?)\s+(views?|likes?)/i);
+
+    if (!metricMatch) {
+      return null;
+    }
+
+    const count = parseCount(`${metricMatch[1]} ${metricMatch[2]}`);
+    if (count == null) {
+      return null;
+    }
+
+    return {
+      count,
+      type: metricMatch[2].toLowerCase().startsWith("view") ? "views" : "likes",
+    } as const;
+  } catch (error) {
+    debug.push(
+      `debug: Instagram post page metric fetch failed for ${url} (${error instanceof Error ? error.message : "unknown error"})`,
+    );
+    return null;
+  }
+}
+
+function extractInstagramPreloadedDataScript(
+  html: string,
+  marker: string,
+  debug?: string[],
+) {
+  const scripts = getInstagramApplicationJsonScripts(html);
+
+  for (const script of scripts) {
+    if (!script.includes(marker)) {
+      continue;
+    }
+
+    const markerIndex = script.indexOf(marker);
+    const dataAnchor = '"result":{"data":';
+    const dataIndex = script.lastIndexOf(dataAnchor, markerIndex);
+
+    if (dataIndex === -1) {
+      continue;
+    }
+
+    const parsed = extractObjectAt(script, dataIndex + dataAnchor.length);
+    if (parsed) {
+      debug?.push(`debug: Instagram preloaded data matched marker "${marker}"`);
+      return parsed;
+    }
+  }
+
+  return null;
+}
+
+function getInstagramApplicationJsonScripts(html: string) {
+  return Array.from(
+    html.matchAll(/<script[^>]*type="application\/json"[^>]*>([\s\S]*?)<\/script>/gi),
+    (match) => match[1],
+  );
+}
+
+function extractObjectAt(input: string, startIndex: number) {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = startIndex; index < input.length; index += 1) {
+    const char = input[index];
+
+    if (char === "\"" && !escaped) {
+      inString = !inString;
+    }
+
+    if (inString) {
+      escaped = char === "\\" && !escaped;
+      continue;
+    }
+
+    if (char === "{") {
+      depth += 1;
+    } else if (char === "}") {
+      depth -= 1;
+
+      if (depth === 0) {
+        try {
+          return JSON.parse(input.slice(startIndex, index + 1)) as unknown;
+        } catch {
+          return null;
+        }
+      }
+    }
+
+    escaped = false;
+  }
+
+  return null;
+}
+
+async function fetchInstagramHtml(url: string) {
+  const response = await fetch(url, {
+    headers: INSTAGRAM_PROFILE_HEADERS,
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error(`Request to ${url} failed with ${response.status}`);
+  }
+
+  return response.text();
+}
+
+function extractInstagramFollowersFromHtml(html: string) {
+  const description = decodeHtmlEntities(extractMetaTag(html, "og:description") ?? "");
+  const match = description.match(/^([^,]+)\s+Followers/i);
+  return match ? parseCount(`${match[1]} followers`) : null;
+}
+
+function buildFollowersLabel(count: number | null) {
+  return count != null ? `${formatNumber(count)} followers` : undefined;
+}
+
+function instagramMediaIdToShortcode(mediaId: string) {
+  const alphabet =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  let value = BigInt(mediaId);
+  let shortcode = "";
+
+  while (value > 0n) {
+    shortcode = alphabet[Number(value % 64n)] + shortcode;
+    value /= 64n;
+  }
+
+  return shortcode || mediaId;
 }
 
 function extractCookieValue(cookieHeader: string, name: string) {

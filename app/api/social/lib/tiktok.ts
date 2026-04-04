@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+
 import { DashboardItem, PlatformResult } from "./types";
 import {
   REQUEST_HEADERS,
@@ -8,6 +10,7 @@ import {
   fetchText,
   formatNumber,
   getArrayByPath,
+  getByPath,
   getFirstNumber,
   getFirstString,
   getNumber,
@@ -45,16 +48,18 @@ export async function getTikTokData(
       fetchText(shareUrl),
     ]);
 
-    const universalData =
-      extractJsonFromScript(desktopHtml, "__UNIVERSAL_DATA_FOR_REHYDRATION__") ?? {};
+    const desktopData = extractTikTokPageData(desktopHtml);
     const shareData =
       extractJsonFromScript(shareHtml, "__INIT_PROPS__") ?? {};
 
     const desktopUser =
-      extractObject(universalData, "webapp.user-detail.userInfo.user") ?? {};
+      extractObject(desktopData, "webapp.user-detail.userInfo.user") ??
+      extractObject(desktopData, "UserModule") ??
+      {};
     const desktopStats =
-      extractObject(universalData, "webapp.user-detail.userInfo.statsV2") ??
-      extractObject(universalData, "webapp.user-detail.userInfo.stats") ??
+      extractObject(desktopData, "webapp.user-detail.userInfo.statsV2") ??
+      extractObject(desktopData, "webapp.user-detail.userInfo.stats") ??
+      extractObject(desktopData, "UserModule.stats") ??
       {};
     const shareUser =
       extractObject(shareData, "sharing.user.user_state.userInfo.user") ?? {};
@@ -75,9 +80,22 @@ export async function getTikTokData(
       getString(desktopUser, "secUid") ??
       getString(shareUser, "secUid") ??
       undefined;
-    const items = secUid
-      ? await tryTikTokPublicItemList(secUid, username, limit, debug)
-      : [];
+    let items = extractTikTokRapidApiItems(desktopData, username, limit);
+    if (items.length > 0) {
+      debug.push(`debug: TikTok HTML rehydration yielded ${items.length} parsed item(s)`);
+    }
+
+    if (items.length === 0) {
+      const browserResult = await tryTikTokBrowserItemList(username, limit, debug);
+      if (browserResult) {
+        items = browserResult.items;
+      }
+    }
+
+    if (items.length === 0 && secUid) {
+      items = await tryTikTokPublicItemList(secUid, username, limit, debug);
+    }
+
     if (!secUid) {
       debug.push("debug: TikTok secUid not found on public page");
     }
@@ -114,6 +132,49 @@ export async function getTikTokData(
       debug,
       items,
     };
+
+    if (items.length === 0) {
+      debug.push("debug: using fallback mock TikTok data");
+
+      return {
+        platform: "tiktok",
+        username,
+        accountName: accountName || username,
+        profileImageUrl:
+          getString(desktopUser, "avatarMedium") ??
+          getString(shareUser, "avatarMedium") ??
+          undefined,
+
+        totalViews: 0,
+        totalViewsLabel: "Unavailable (TikTok restrictions)",
+
+        followersLabel: followerLabel,
+
+        source: "Fallback (TikTok public data restricted)",
+
+        status: "partial",
+
+        warnings: [
+          "TikTok restricts public access to video data without authentication or signed requests.",
+          "Displaying limited profile data as fallback.",
+        ],
+
+        debug,
+
+        items: [
+          {
+            id: "fallback-1",
+            title: "TikTok data unavailable",
+            url: `https://www.tiktok.com/@${username}`,
+            thumbnailUrl: undefined,
+            contentType: "video",
+            views: null,
+            viewsLabel: "N/A",
+            publishedLabel: undefined,
+          },
+        ],
+      };
+    }
   } catch (error) {
     debug.push(
       `debug: TikTok public profile fetch failed (${error instanceof Error ? error.message : "unknown error"})`,
@@ -125,6 +186,15 @@ export async function getTikTokData(
       error,
     );
   }
+}
+
+function extractTikTokPageData(html: string) {
+  const sigiState = extractJsonFromScript(html, "SIGI_STATE");
+  if (sigiState) {
+    return sigiState;
+  }
+
+  return extractJsonFromScript(html, "__UNIVERSAL_DATA_FOR_REHYDRATION__") ?? {};
 }
 
 async function tryTikTokRapidApi(
@@ -241,51 +311,31 @@ function extractTikTokRapidApiItems(
   username: string,
   limit: number,
 ): DashboardItem[] {
-  const postArrays = [
-    getArrayByPath(data, "data.itemList"),
-    getArrayByPath(data, "itemList"),
-    getArrayByPath(data, "data.aweme_list"),
-    getArrayByPath(data, "aweme_list"),
-    getArrayByPath(data, "data.items"),
-    getArrayByPath(data, "data.data.items"),
-    getArrayByPath(data, "items"),
-    getArrayByPath(data, "videos"),
-    getArrayByPath(data, "data.videos"),
-  ].filter(Array.isArray) as unknown[][];
+  const itemModule = getByPath(data, "ItemModule");
 
-  const rawItems = postArrays.flat().slice(0, limit);
+  if (!itemModule || typeof itemModule !== "object") {
+    return [];
+  }
 
-  return rawItems.map((item, index) => {
-    const videoId =
-      getFirstString(item, ["aweme_id", "id", "video.id", "videoId"]) ?? `tiktok-${index}`;
-    const viewCount = getFirstNumber(item, [
-      "statistics.playCount",
-      "stats.play_count",
-      "stats.playCount",
-      "play_count",
-      "view_count",
-      "views",
-    ]);
+  const rawItems = Object.values(itemModule).slice(0, limit);
+
+  return rawItems.map((item: any, index) => {
+    const videoId = item.id ?? `tiktok-${index}`;
+    const viewCount = item.stats?.playCount ?? null;
 
     return {
       id: videoId,
-      title:
-        getFirstString(item, ["desc", "title", "video_description"]) ?? `TikTok video ${index + 1}`,
-      url:
-        getFirstString(item, ["share_url", "shareUrl"]) ??
-        `https://www.tiktok.com/@${username}/video/${videoId}`,
+      title: item.desc ?? `TikTok video ${index + 1}`,
+      url: `https://www.tiktok.com/@${username}/video/${videoId}`,
       thumbnailUrl:
-        getFirstString(item, [
-          "video.cover",
-          "video.dynamicCover",
-          "video.originCover",
-          "cover",
-        ]) ?? undefined,
+        item.video?.cover ||
+        item.video?.originCover ||
+        item.video?.dynamicCover,
       contentType: "video",
       views: viewCount,
-      viewsLabel: viewCount != null ? formatNumber(viewCount) : "Unavailable",
+      viewsLabel: viewCount ? viewCount.toString() : "0",
       publishedLabel: undefined,
-      } satisfies DashboardItem;
+    };
   });
 }
 
@@ -347,6 +397,100 @@ async function tryTikTokPublicItemList(
   const items = extractTikTokRapidApiItems(parsed, username, limit);
   debug.push(`debug: TikTok item_list returned ${items.length} parsed item(s)`);
   return items;
+}
+
+async function tryTikTokBrowserItemList(
+  username: string,
+  limit: number,
+  debug: string[],
+): Promise<{ items: DashboardItem[] } | null> {
+  const executablePath = getTikTokBrowserExecutablePath();
+  if (!executablePath) {
+    debug.push("debug: TikTok browser fallback skipped because no Chromium/Edge executable was found");
+    return null;
+  }
+
+  let puppeteer: typeof import("puppeteer-core") | null = null;
+  try {
+    puppeteer = await import("puppeteer-core");
+  } catch (error) {
+    debug.push(
+      `debug: TikTok browser fallback skipped because puppeteer-core could not load (${error instanceof Error ? error.message : "unknown error"})`,
+    );
+    return null;
+  }
+
+  const browser = await puppeteer.default.launch({
+    headless: true,
+    executablePath,
+    args: ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+  });
+
+  try {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1280, height: 900 });
+    await page.setUserAgent(
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
+    );
+    await page.setExtraHTTPHeaders({
+      "accept-language": "en-US,en;q=0.9",
+    });
+    let capturedPayload: unknown = null;
+    let resolveCapture: (() => void) | null = null;
+    const capturePromise = new Promise<void>((resolve) => {
+      resolveCapture = resolve;
+    });
+
+    page.on("response", async (response) => {
+      if (capturedPayload || !response.url().includes("/api/post/item_list/")) {
+        return;
+      }
+
+      try {
+        const text = await response.text();
+        if (!text.trim()) {
+          return;
+        }
+
+        capturedPayload = JSON.parse(text) as unknown;
+        resolveCapture?.();
+      } catch {
+        // Ignore parsing failures and keep listening for the next matching response.
+      }
+    });
+
+    await page.goto(`https://www.tiktok.com/@${username}?lang=en`, {
+      waitUntil: "domcontentloaded",
+      timeout: 120000,
+    });
+    await Promise.race([
+      capturePromise,
+      new Promise((resolve) => setTimeout(resolve, 20000)),
+    ]);
+
+    if (!capturedPayload) {
+      debug.push("debug: TikTok browser fallback did not capture a usable item_list response");
+      return null;
+    }
+
+    const items = extractTikTokRapidApiItems(capturedPayload, username, limit);
+    debug.push(`debug: TikTok browser fallback captured ${items.length} parsed item(s)`);
+    return { items };
+  } finally {
+    await browser.close();
+  }
+}
+
+function getTikTokBrowserExecutablePath() {
+  const candidates = [
+    process.env.PUPPETEER_EXECUTABLE_PATH,
+    "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+    "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+  ].filter(Boolean) as string[];
+
+  return candidates.find((candidate) => existsSync(candidate)) ?? null;
 }
 
 function extractCookieSubset(cookieHeader: string, names: string[]) {

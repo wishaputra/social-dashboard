@@ -362,14 +362,6 @@ function PlatformCard({
               </div>
             ) : null}
 
-            {result.debug && result.debug.length > 0 ? (
-              <div className="rounded-[1.25rem] border border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-6 text-slate-600">
-                {result.debug.slice(0, 6).map((entry) => (
-                  <p key={entry}>{entry}</p>
-                ))}
-              </div>
-            ) : null}
-
             <div className="grid gap-3">
               <div className="flex items-center justify-between">
                 <h2 className="text-sm font-semibold text-slate-800">
