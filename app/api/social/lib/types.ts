@@ -22,7 +22,6 @@ export type PlatformResult = {
   source: string;
   status: "success" | "partial" | "error";
   warnings: string[];
-  debug?: string[];
   items: DashboardItem[];
   error?: string;
 };

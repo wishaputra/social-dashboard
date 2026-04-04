@@ -25,17 +25,10 @@ export async function getTikTokData(
   username: string,
   limit: number,
 ): Promise<PlatformResult> {
-  const debug: string[] = [];
   const rapidApiConfigured = Boolean(getRapidApiConfig("tiktok"));
-  debug.push(
-    rapidApiConfigured
-      ? "debug: RapidAPI TikTok config detected"
-      : "debug: RapidAPI TikTok config missing",
-  );
 
-  const rapidApiResult = await tryTikTokRapidApi(username, limit, debug);
+  const rapidApiResult = await tryTikTokRapidApi(username, limit);
   if (rapidApiResult) {
-    rapidApiResult.debug = debug;
     return rapidApiResult;
   }
 
@@ -82,22 +75,20 @@ export async function getTikTokData(
       undefined;
     let items = extractTikTokRapidApiItems(desktopData, username, limit);
     if (items.length > 0) {
-      debug.push(`debug: TikTok HTML rehydration yielded ${items.length} parsed item(s)`);
     }
 
     if (items.length === 0) {
-      const browserResult = await tryTikTokBrowserItemList(username, limit, debug);
+      const browserResult = await tryTikTokBrowserItemList(username, limit);
       if (browserResult) {
         items = browserResult.items;
       }
     }
 
     if (items.length === 0 && secUid) {
-      items = await tryTikTokPublicItemList(secUid, username, limit, debug);
+      items = await tryTikTokPublicItemList(secUid, username, limit);
     }
 
     if (!secUid) {
-      debug.push("debug: TikTok secUid not found on public page");
     }
     const warnings =
       items.length > 0
@@ -129,12 +120,10 @@ export async function getTikTokData(
       source: "TikTok public profile pages",
       status: items.length > 0 ? "success" : "partial",
       warnings,
-      debug,
       items,
     };
 
     if (items.length === 0) {
-      debug.push("debug: using fallback mock TikTok data");
 
       return {
         platform: "tiktok",
@@ -159,8 +148,6 @@ export async function getTikTokData(
           "Displaying limited profile data as fallback.",
         ],
 
-        debug,
-
         items: [
           {
             id: "fallback-1",
@@ -176,13 +163,10 @@ export async function getTikTokData(
       };
     }
   } catch (error) {
-    debug.push(
-      `debug: TikTok public profile fetch failed (${error instanceof Error ? error.message : "unknown error"})`,
-    );
     return buildErrorResult(
       "tiktok",
       username,
-      `Failed to read the public TikTok profile page. ${debug.join(" | ")}`,
+      `Failed to read the public TikTok profile page.`,
       error,
     );
   }
@@ -200,11 +184,9 @@ function extractTikTokPageData(html: string) {
 async function tryTikTokRapidApi(
   username: string,
   limit: number,
-  debug: string[],
 ): Promise<PlatformResult | null> {
   const config = getRapidApiConfig("tiktok");
   if (!config) {
-    debug.push("debug: skip TikTok RapidAPI because env is incomplete");
     return null;
   }
 
@@ -213,7 +195,6 @@ async function tryTikTokRapidApi(
       username,
       limit,
     });
-    debug.push("debug: TikTok RapidAPI profile request succeeded");
 
     const secUid =
       getFirstString(profileData, [
@@ -231,16 +212,6 @@ async function tryTikTokRapidApi(
         limit,
         secUid,
       }).catch(() => null);
-    }
-
-    if (postsData) {
-      debug.push("debug: TikTok RapidAPI posts request succeeded");
-    } else if (config.postsUrl) {
-      debug.push(
-        secUid
-          ? "debug: TikTok RapidAPI posts request returned null"
-          : "debug: TikTok RapidAPI posts skipped because secUid was missing from profile response",
-      );
     }
 
     const accountName =
@@ -295,13 +266,9 @@ async function tryTikTokRapidApi(
         items.length > 0
           ? []
           : ["RapidAPI profile data loaded, but recent TikTok post views were unavailable."],
-      debug,
       items,
     };
   } catch (error) {
-    debug.push(
-      `debug: TikTok RapidAPI failed (${error instanceof Error ? error.message : "unknown error"})`,
-    );
     return null;
   }
 }
@@ -343,7 +310,6 @@ async function tryTikTokPublicItemList(
   secUid: string,
   username: string,
   limit: number,
-  debug: string[],
 ): Promise<DashboardItem[]> {
   const profileUrl = `https://www.tiktok.com/@${username}?lang=en`;
   const initialResponse = await fetch(profileUrl, {
@@ -354,11 +320,7 @@ async function tryTikTokPublicItemList(
   const cookieHeader =
     readCookieHeader(["ttcookies.txt", "tiktok-cookies.txt"]) ??
     extractCookieSubset(setCookie, ["ttwid", "tt_csrf_token", "msToken"]);
-  debug.push(
-    cookieHeader
-      ? "debug: TikTok cookie header prepared for item list request"
-      : "debug: TikTok item list request has no cookie header",
-  );
+
   const msToken = extractCookieValue(cookieHeader, "msToken");
 
   const url = new URL("https://www.tiktok.com/api/post/item_list/");
@@ -383,30 +345,25 @@ async function tryTikTokPublicItemList(
   });
 
   if (!response.ok) {
-    debug.push(`debug: TikTok item_list returned ${response.status}`);
     return [];
   }
 
   const text = await response.text();
   if (!text.trim()) {
-    debug.push("debug: TikTok item_list returned empty body");
     return [];
   }
 
   const parsed = JSON.parse(text) as unknown;
   const items = extractTikTokRapidApiItems(parsed, username, limit);
-  debug.push(`debug: TikTok item_list returned ${items.length} parsed item(s)`);
   return items;
 }
 
 async function tryTikTokBrowserItemList(
   username: string,
   limit: number,
-  debug: string[],
 ): Promise<{ items: DashboardItem[] } | null> {
   const executablePath = getTikTokBrowserExecutablePath();
   if (!executablePath) {
-    debug.push("debug: TikTok browser fallback skipped because no Chromium/Edge executable was found");
     return null;
   }
 
@@ -414,9 +371,6 @@ async function tryTikTokBrowserItemList(
   try {
     puppeteer = await import("puppeteer-core");
   } catch (error) {
-    debug.push(
-      `debug: TikTok browser fallback skipped because puppeteer-core could not load (${error instanceof Error ? error.message : "unknown error"})`,
-    );
     return null;
   }
 
@@ -469,12 +423,10 @@ async function tryTikTokBrowserItemList(
     ]);
 
     if (!capturedPayload) {
-      debug.push("debug: TikTok browser fallback did not capture a usable item_list response");
       return null;
     }
 
     const items = extractTikTokRapidApiItems(capturedPayload, username, limit);
-    debug.push(`debug: TikTok browser fallback captured ${items.length} parsed item(s)`);
     return { items };
   } finally {
     await browser.close();

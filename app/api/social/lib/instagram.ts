@@ -28,17 +28,10 @@ export async function getInstagramData(
   username: string,
   limit: number,
 ): Promise<PlatformResult> {
-  const debug: string[] = [];
   const rapidApiConfigured = Boolean(getRapidApiConfig("instagram"));
-  debug.push(
-    rapidApiConfigured
-      ? "debug: RapidAPI Instagram config detected"
-      : "debug: RapidAPI Instagram config missing",
-  );
 
-  const rapidApiResult = await tryInstagramRapidApi(username, limit, debug);
+  const rapidApiResult = await tryInstagramRapidApi(username, limit);
   if (rapidApiResult) {
-    rapidApiResult.debug = debug;
     return rapidApiResult;
   }
 
@@ -50,21 +43,18 @@ export async function getInstagramData(
       html,
       username,
       limit,
-      debug,
     );
     if (preloadedHtmlResult) {
-      preloadedHtmlResult.debug = debug;
       return preloadedHtmlResult;
     }
 
-    const webProfileInfoResult = await tryInstagramWebProfileInfo(username, limit, debug);
+    const webProfileInfoResult = await tryInstagramWebProfileInfo(username, limit);
     if (webProfileInfoResult) {
-      webProfileInfoResult.debug = debug;
       return webProfileInfoResult;
     }
 
     const userId = html.match(/"id":"(\d+)"/)?.[1];
-    const items = userId ? await tryInstagramFeed(userId, profileUrl, limit, debug) : [];
+    const items = userId ? await tryInstagramFeed(userId, profileUrl, limit) : [];
     const totalViews = items.length > 0 ? sumViews(items) : null;
 
     return {
@@ -84,17 +74,13 @@ export async function getInstagramData(
       warnings: [
         "Instagram changed its public page shape, so the API is using minimal fallbacks for this request.",
       ],
-      debug,
       items,
     };
   } catch (error) {
-    debug.push(
-      `debug: public profile fetch failed (${error instanceof Error ? error.message : "unknown error"})`,
-    );
     return buildErrorResult(
       "instagram",
       username,
-      `Failed to read the public Instagram profile page. ${debug.join(" | ")}`,
+      `Failed to read the public Instagram profile page.`,
       error,
     );
   }
@@ -104,13 +90,11 @@ async function extractInstagramPreloadedPageData(
   html: string,
   username: string,
   limit: number,
-  debug: string[],
 ): Promise<PlatformResult | null> {
-  const profileData = extractInstagramPreloadedDataScript(html, "xig_user_by_igid_v2", debug);
+  const profileData = extractInstagramPreloadedDataScript(html, "xig_user_by_igid_v2");
   const timelineData = extractInstagramPreloadedDataScript(
     html,
     "polaris_timeline_connection",
-    debug,
   );
 
   const user =
@@ -118,7 +102,6 @@ async function extractInstagramPreloadedPageData(
     getByPath(timelineData, "xig_user_by_igid_v2");
 
   if (!user || typeof user !== "object") {
-    debug.push("debug: Instagram preloaded HTML had no usable user object");
     return null;
   }
 
@@ -128,17 +111,14 @@ async function extractInstagramPreloadedPageData(
   const rawItems = extractInstagramRapidApiItems(timelineData ?? profileData, limit);
 
   if (rawItems.length === 0) {
-    debug.push("debug: Instagram preloaded HTML had no timeline items");
     return null;
   }
 
-  const { items: enrichedItems, usedLikeFallback } = await enrichInstagramItems(rawItems, debug);
+  const { items: enrichedItems, usedLikeFallback } = await enrichInstagramItems(rawItems);
   const hasViewMetrics = enrichedItems.some(
     (item) => item.contentType === "video" && item.views != null,
   );
   const shouldUseFollowersProxy = usedLikeFallback || !hasViewMetrics;
-
-  debug.push(`debug: Instagram preloaded HTML yielded ${enrichedItems.length} item(s)`);
 
   return {
     platform: "instagram",
@@ -166,7 +146,6 @@ async function extractInstagramPreloadedPageData(
             "Instagram hides most public view counts for logged-out requests, so followers are used as the profile-level proxy and post metrics fall back to public like counts where needed.",
           ]
         : [],
-    debug,
     items: enrichedItems,
   };
 }
@@ -175,14 +154,8 @@ async function tryInstagramFeed(
   userId: string,
   referer: string,
   limit: number,
-  debug?: string[],
 ): Promise<DashboardItem[]> {
   const cookieHeader = readCookieHeader(["igcookies.txt", "instagram-cookies.txt"]);
-  debug?.push(
-    cookieHeader
-      ? "debug: Instagram cookie file loaded for feed request"
-      : "debug: Instagram cookie file not found for feed request",
-  );
   const response = await fetch(
     `https://www.instagram.com/api/v1/feed/user/${userId}/username/?count=${limit}`,
     {
@@ -205,7 +178,6 @@ async function tryInstagramFeed(
   );
 
   if (!response.ok) {
-    debug?.push(`debug: Instagram feed endpoint returned ${response.status}`);
     return [];
   }
 
@@ -215,7 +187,6 @@ async function tryInstagramFeed(
   };
 
   const rawItems = (data.items ?? data.profile_grid_items ?? []).slice(0, limit);
-  debug?.push(`debug: Instagram feed endpoint returned ${rawItems.length} item(s)`);
 
   return rawItems.map((item, index) => {
     const code = getString(item, "code") ?? `instagram-${index}`;
@@ -246,11 +217,9 @@ async function tryInstagramFeed(
 async function tryInstagramRapidApi(
   username: string,
   limit: number,
-  debug: string[],
 ): Promise<PlatformResult | null> {
   const config = getRapidApiConfig("instagram");
   if (!config) {
-    debug.push("debug: skip Instagram RapidAPI because env is incomplete");
     return null;
   }
 
@@ -261,12 +230,6 @@ async function tryInstagramRapidApi(
         ? fetchRapidApiJson(config.postsUrl, config.host, { username, limit }).catch(() => null)
         : Promise.resolve(null),
     ]);
-    debug.push("debug: Instagram RapidAPI profile request succeeded");
-    if (postsData) {
-      debug.push("debug: Instagram RapidAPI posts request succeeded");
-    } else if (config.postsUrl) {
-      debug.push("debug: Instagram RapidAPI posts request returned null");
-    }
 
     const accountName =
       getFirstString(profileData, [
@@ -321,13 +284,9 @@ async function tryInstagramRapidApi(
         items.length > 0
           ? []
           : ["RapidAPI profile data loaded, but recent Instagram post views were unavailable."],
-      debug,
       items,
     };
   } catch (error) {
-    debug.push(
-      `debug: Instagram RapidAPI failed (${error instanceof Error ? error.message : "unknown error"})`,
-    );
     return null;
   }
 }
@@ -335,15 +294,9 @@ async function tryInstagramRapidApi(
 async function tryInstagramWebProfileInfo(
   username: string,
   limit: number,
-  debug: string[],
 ): Promise<PlatformResult | null> {
   const profileUrl = `https://www.instagram.com/${username}/`;
   const cookieHeader = readCookieHeader(["igcookies.txt", "instagram-cookies.txt"]);
-  debug.push(
-    cookieHeader
-      ? "debug: Instagram cookie file loaded for web_profile_info"
-      : "debug: Instagram cookie file not found for web_profile_info",
-  );
 
   try {
     const response = await fetch(
@@ -369,7 +322,6 @@ async function tryInstagramWebProfileInfo(
     );
 
     if (!response.ok) {
-      debug.push(`debug: Instagram web_profile_info returned ${response.status}`);
       return null;
     }
 
@@ -380,12 +332,10 @@ async function tryInstagramWebProfileInfo(
       getByPath(data, "graphql.user");
 
     if (!user || typeof user !== "object") {
-      debug.push("debug: Instagram web_profile_info response had no user object");
       return null;
     }
 
     const items = extractInstagramRapidApiItems(data, limit);
-    debug.push(`debug: Instagram web_profile_info returned ${items.length} parsed item(s)`);
     const followersCount = getFirstNumber(user, [
       "edge_followed_by.count",
       "follower_count",
@@ -410,13 +360,9 @@ async function tryInstagramWebProfileInfo(
         items.length > 0
           ? []
           : ["Instagram profile info loaded, but recent post view data was unavailable in the web payload."],
-      debug,
       items,
     };
   } catch (error) {
-    debug.push(
-      `debug: Instagram web_profile_info failed (${error instanceof Error ? error.message : "unknown error"})`,
-    );
     return null;
   }
 }
@@ -489,10 +435,10 @@ function extractInstagramRapidApiItems(data: unknown, limit: number): DashboardI
     .filter((item) => Boolean(item.url));
 }
 
-async function enrichInstagramItems(items: DashboardItem[], debug: string[]) {
+async function enrichInstagramItems(items: DashboardItem[]) {
   const enrichedItems = await Promise.all(
     items.map(async (item) => {
-      const metric = await extractInstagramMetricFromPostPage(item.url, debug);
+      const metric = await extractInstagramMetricFromPostPage(item.url);
       if (!metric) {
         return { item, usedLikeFallback: false };
       }
@@ -515,7 +461,7 @@ async function enrichInstagramItems(items: DashboardItem[], debug: string[]) {
   };
 }
 
-async function extractInstagramMetricFromPostPage(url: string, debug: string[]) {
+async function extractInstagramMetricFromPostPage(url: string) {
   try {
     const html = await fetchInstagramHtml(url);
     const description = decodeHtmlEntities(extractMetaTag(html, "og:description") ?? "");
@@ -535,9 +481,6 @@ async function extractInstagramMetricFromPostPage(url: string, debug: string[]) 
       type: metricMatch[2].toLowerCase().startsWith("view") ? "views" : "likes",
     } as const;
   } catch (error) {
-    debug.push(
-      `debug: Instagram post page metric fetch failed for ${url} (${error instanceof Error ? error.message : "unknown error"})`,
-    );
     return null;
   }
 }
@@ -545,7 +488,6 @@ async function extractInstagramMetricFromPostPage(url: string, debug: string[]) 
 function extractInstagramPreloadedDataScript(
   html: string,
   marker: string,
-  debug?: string[],
 ) {
   const scripts = getInstagramApplicationJsonScripts(html);
 
@@ -564,7 +506,6 @@ function extractInstagramPreloadedDataScript(
 
     const parsed = extractObjectAt(script, dataIndex + dataAnchor.length);
     if (parsed) {
-      debug?.push(`debug: Instagram preloaded data matched marker "${marker}"`);
       return parsed;
     }
   }
