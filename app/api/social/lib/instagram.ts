@@ -645,9 +645,9 @@ function instagramMediaIdToShortcode(mediaId: string) {
   let value = BigInt(mediaId);
   let shortcode = "";
 
-  while (value > 0n) {
-    shortcode = alphabet[Number(value % 64n)] + shortcode;
-    value /= 64n;
+  while (value > BigInt(0)) {
+    shortcode = alphabet[Number(value % BigInt(64))] + shortcode;
+    value /= BigInt(64);
   }
 
   return shortcode || mediaId;
