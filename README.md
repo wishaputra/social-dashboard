@@ -93,15 +93,6 @@ Tetapi list recent post views untuk request publik/logged-out sudah tidak stabil
 - `app/api/social/route.ts`: fetch + parsing + normalisasi data platform
 - `app/layout.tsx`: metadata aplikasi
 
-## Deploy
-
-Project ini cocok di-deploy ke Vercel.
-
-Langkah singkat:
-
-1. Push repository ke GitHub
-2. Import project ke Vercel
-3. Deploy tanpa konfigurasi tambahan
 
 ## Contoh Penjelasan Singkat untuk Pengumpulan
 
