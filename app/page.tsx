@@ -173,23 +173,6 @@ export default function Home() {
                 <SummaryCard label="Status siap" value={String(dashboardSummary.healthyPlatforms)} />
               </div>
             </div>
-
-            <div className="grid gap-4 rounded-[1.5rem] border border-slate-200 bg-slate-50 p-5">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">
-                  Ringkasan
-                </p>
-                <p className="mt-3 text-sm leading-7 text-slate-600">
-                  Dashboard ini cocok untuk demo technical test karena datanya bisa
-                  di-refresh langsung tanpa reload halaman dan limitasi tiap platform tetap terlihat jelas.
-                </p>
-              </div>
-              <div className="grid gap-2 text-sm text-slate-600">
-                <p>1. YouTube punya coverage public paling lengkap.</p>
-                <p>2. Instagram dan TikTok tetap ditampilkan dengan pendekatan best-effort.</p>
-                <p>3. Jumlah konten bisa diubah dan otomatis refresh.</p>
-              </div>
-            </div>
           </div>
         </section>
 
@@ -358,6 +341,14 @@ function PlatformCard({
               <div className="rounded-[1.25rem] border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-800">
                 {result.warnings.slice(0, 3).map((warning) => (
                   <p key={warning}>{warning}</p>
+                ))}
+              </div>
+            ) : null}
+
+            {result.debug && result.debug.length > 0 ? (
+              <div className="rounded-[1.25rem] border border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-6 text-slate-600">
+                {result.debug.slice(0, 6).map((entry) => (
+                  <p key={entry}>{entry}</p>
                 ))}
               </div>
             ) : null}

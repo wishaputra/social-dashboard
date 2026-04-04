@@ -1,99 +1,138 @@
 # Social Media Views Dashboard
 
-Next.js dashboard untuk technical test Web Developer yang menampilkan data dari 3 platform sekaligus:
+Next.js dashboard untuk technical test Web Developer yang menampilkan data dari 3 platform secara bersamaan:
 
 - TikTok
 - YouTube
 - Instagram
 
-User bisa memasukkan username/channel, melihat nama akun, foto profil, total views, dan daftar konten terbaru, lalu me-refresh data tanpa reload halaman.
+User dapat memasukkan username/channel, melihat informasi akun, total views, serta daftar konten terbaru, dan melakukan refresh data tanpa reload halaman.
+
+---
 
 ## Stack
 
-- Next.js App Router
+- Next.js (App Router)
 - TypeScript
 - Tailwind CSS
-- Server-side aggregation via `/api/social`
+- Server-side data aggregation via `/api/social`
+
+---
 
 ## Cara Menjalankan
 
 ```bash
 npm install
 npm run dev
-```
 
-App akan jalan di `http://localhost:3000`.
+Pendekatan
 
-## Pendekatan
+Aplikasi ini menggunakan pendekatan server-side aggregation melalui endpoint:
 
-Dashboard ini memakai satu endpoint server-side: `app/api/social/route.ts`.
+app/api/social/route.ts
 
-Endpoint tersebut:
+Endpoint ini bertugas untuk:
 
-- menerima username TikTok, YouTube, dan Instagram
-- mengambil data public page masing-masing platform
-- menormalisasi hasil ke format yang sama
-- mengirimkan response ke UI agar dashboard bisa di-refresh tanpa full page reload
+menerima input username dari masing-masing platform
+mengambil data dari public source (API / HTML parsing)
+menormalisasi data ke format yang seragam
+mengirimkan response ke frontend
 
-UI ada di `app/page.tsx` dan dibuat supaya:
+Pendekatan ini dipilih untuk:
 
-- semua platform tampil berdampingan
-- status data jelas (`Ready`, `Partial`, `Error`)
-- limitasi public data tetap transparan ke reviewer
+menghindari CORS issue
+menjaga keamanan API key
+memastikan proses refresh data dapat dilakukan tanpa reload halaman
+UI / UX
 
-## Catatan per Platform
+Dashboard dirancang dengan prinsip:
 
-### YouTube
+menampilkan ketiga platform secara berdampingan
+status data yang jelas (Ready, Partial, Error)
+tetap informatif meskipun terdapat keterbatasan data dari platform tertentu
+Catatan Implementasi per Platform
+YouTube
 
-YouTube public channel page masih cukup bisa diparsing dari HTML publik.
+YouTube memiliki akses data publik yang paling stabil.
 
-Data yang diambil:
+Data yang berhasil diambil:
 
-- nama channel
-- avatar
-- total channel views dari tab About
-- minimal 5 video terbaru
-- views per video
+nama channel
+foto profil
+total channel views
+minimal 5 video terbaru
+jumlah views per video
 
-Ini adalah integrasi yang paling lengkap di app ini.
+Implementasi YouTube merupakan bagian paling lengkap dalam aplikasi ini.
 
-### Instagram
+Instagram
 
-Instagram public profile masih menampilkan metadata akun seperti:
+Instagram masih menyediakan metadata akun publik seperti:
 
-- nama akun
-- foto profil
-- deskripsi/follower snippet
+username
+foto profil
+sebagian informasi profil
 
-Namun untuk views post terbaru, endpoint publik tanpa login sering dibatasi. Karena itu implementasi di project ini memakai best-effort fetch untuk 5 post terbaru, tetapi bila endpoint diblokir maka dashboard tetap menampilkan profile metadata dan warning yang jelas.
+Namun, untuk data konten (views per post), akses publik tanpa autentikasi memiliki keterbatasan dan tidak selalu konsisten, terutama pada environment produksi (deployment).
 
-### TikTok
+Pendekatan yang digunakan:
 
-TikTok public page masih memungkinkan pengambilan metadata akun seperti:
+mengambil metadata akun sebagai data utama
+mencoba mengambil konten terbaru secara best-effort
+menampilkan status partial jika data konten tidak tersedia
+TikTok
 
-- nama akun
-- avatar
-- follower info
+TikTok memiliki proteksi yang lebih ketat terhadap akses data publik.
 
-Tetapi list recent post views untuk request publik/logged-out sudah tidak stabil. Karena itu card TikTok dibuat `partial` dan limitation tersebut ditampilkan langsung di UI.
+Data yang masih dapat diakses:
 
-## Kendala yang Ditemui
+username
+foto profil
+jumlah followers
 
-- Tiap platform punya struktur halaman dan kebijakan akses data publik yang berbeda.
-- YouTube relatif paling mudah karena data masih ada di HTML page.
-- Instagram dan TikTok jauh lebih ketat untuk data konten/view saat request tanpa login.
-- Karena requirement membolehkan “API resmi atau metode lain yang sah”, pendekatan terbaik untuk technical test ini adalah:
-  - ambil data publik yang memang tersedia
-  - tampilkan hasil semaksimal mungkin
-  - jelaskan limitasi secara jujur di UI dan dokumentasi
+Namun, untuk data video terbaru dan view count:
 
-## Struktur Penting
+membutuhkan request signature / autentikasi
+tidak tersedia secara stabil melalui public request
 
-- `app/page.tsx`: dashboard UI
-- `app/api/social/route.ts`: fetch + parsing + normalisasi data platform
-- `app/layout.tsx`: metadata aplikasi
+Pendekatan yang digunakan:
 
+menampilkan metadata akun
+menyediakan fallback untuk konten
+menandai status sebagai partial
+Kendala Teknis
 
-## Contoh Penjelasan Singkat untuk Pengumpulan
+Beberapa kendala utama dalam pengembangan:
 
-Saya membangun dashboard dengan Next.js App Router dan TypeScript. Data dari TikTok, YouTube, dan Instagram diambil di sisi server melalui public endpoints/page parsing, lalu dinormalisasi ke satu format response agar UI bisa menampilkan ketiga platform secara konsisten dan bisa di-refresh tanpa reload halaman. Kendala utama ada pada limitasi akses public data Instagram dan TikTok, terutama untuk view per konten terbaru tanpa login, sehingga solusi saya adalah menampilkan data publik yang tersedia semaksimal mungkin dan menandai limitasinya secara jelas di dashboard.
+Perbedaan struktur data dan kebijakan akses di setiap platform
+Instagram dan TikTok membatasi akses data konten tanpa login
+Endpoint publik sering berubah atau dibatasi di environment produksi
+
+Solusi yang diterapkan:
+
+menggunakan pendekatan hybrid (API + scraping)
+menampilkan data publik yang tersedia secara maksimal
+memberikan status dan warning yang transparan pada UI
+menjaga agar aplikasi tetap stabil meskipun data tidak lengkap
+Struktur Project
+app/page.tsx → Dashboard UI
+app/api/social/route.ts → Aggregation & data fetching
+lib/ → Helper untuk masing-masing platform
+components/ → UI components
+Kesimpulan
+
+Aplikasi ini dirancang tidak hanya untuk menampilkan data, tetapi juga untuk:
+
+menangani perbedaan akses antar platform
+tetap stabil dalam kondisi data terbatas
+memberikan transparansi terhadap limitasi API publik
+
+Pendekatan ini mencerminkan bagaimana aplikasi production menangani dependency eksternal yang tidak selalu konsisten.
+
+Penjelasan Singkat (untuk submission)
+
+Saya membangun dashboard menggunakan Next.js App Router dan TypeScript dengan pendekatan server-side data aggregation. Data dari TikTok, YouTube, dan Instagram diambil melalui public endpoint dan HTML parsing, kemudian dinormalisasi agar dapat ditampilkan secara konsisten di UI.
+
+YouTube dapat diimplementasikan secara lengkap, sedangkan Instagram dan TikTok memiliki keterbatasan akses data publik, khususnya untuk konten dan view count tanpa autentikasi. Untuk itu, saya menerapkan pendekatan best-effort dan fallback, serta menampilkan status data secara transparan di dashboard.
+
+Fokus utama dari solusi ini adalah menjaga stabilitas aplikasi sekaligus menunjukkan penanganan terhadap limitasi API dari masing-masing platform.
